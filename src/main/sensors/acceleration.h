@@ -20,9 +20,13 @@
 
 #pragma once
 
+#include "common/axis.h"
 #include "common/time.h"
+
 #include "pg/pg.h"
+
 #include "drivers/accgyro/accgyro.h"
+
 #include "sensors/sensors.h"
 
 // Type of accelerometer used/detected
@@ -55,6 +59,7 @@ typedef struct acc_s {
     accDev_t dev;
     uint16_t sampleRateHz;
     float accADC[XYZ_AXIS_COUNT];
+    float jerk[XYZ_AXIS_COUNT];
     bool isAccelUpdatedAtLeastOnce;
 } acc_t;
 
@@ -72,8 +77,9 @@ typedef union rollAndPitchTrims_u {
 
 #if defined(USE_ACC)
 typedef struct accelerometerConfig_s {
-    uint16_t acc_lpf_hz;                    // cutoff frequency for the low pass filter used on the acc z-axis for althold in Hz
+    uint16_t acc_lpf_hz;                    // cutoff frequency for the attitude anti-aliasing filter
     uint8_t acc_hardware;                   // Which acc hardware to use on boards with more than one device
+    uint16_t collision_threshold;           // Jerk threshold for collision detection
     bool acc_high_fsr;
     flightDynamicsTrims_t accZero;
     rollAndPitchTrims_t accelerometerTrims;
@@ -85,6 +91,8 @@ PG_DECLARE(accelerometerConfig_t, accelerometerConfig);
 bool accInit(uint16_t accSampleRateHz);
 bool accIsCalibrationComplete(void);
 bool accHasBeenCalibrated(void);
+float accGetCollisionStrength(void);
+bool accCollisionDetected(void);
 void accStartCalibration(void);
 void resetRollAndPitchTrims(rollAndPitchTrims_t *rollAndPitchTrims);
 void accUpdate(timeUs_t currentTimeUs);

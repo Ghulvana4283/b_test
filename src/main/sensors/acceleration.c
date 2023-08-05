@@ -28,7 +28,6 @@
 
 #include "build/debug.h"
 
-#include "common/axis.h"
 #include "common/filter.h"
 #include "common/utils.h"
 
@@ -36,10 +35,14 @@
 
 #include "sensors/acceleration_init.h"
 #include "sensors/boardalignment.h"
+#include "sensors/gyro.h"
 
 #include "acceleration.h"
 
-FAST_DATA_ZERO_INIT acc_t acc;                       // acc access functions
+FAST_DATA_ZERO_INIT acc_t acc;  // acc access functions
+
+static FAST_DATA_ZERO_INIT float accAdcPrev[XYZ_AXIS_COUNT];
+static FAST_DATA_ZERO_INIT float jerkMagnitude;
 
 static void applyAccelerationTrims(const flightDynamicsTrims_t *accelerationTrims)
 {
@@ -78,10 +81,48 @@ void accUpdate(timeUs_t currentTimeUs)
 
     applyAccelerationTrims(accelerationRuntime.accelerationTrims);
 
-    for (int axis = 0; axis < XYZ_AXIS_COUNT; axis++) {
-        const float val = acc.accADC[axis];
-        acc.accADC[axis] = accelerationRuntime.accLpfCutHz ? pt2FilterApply(&accelerationRuntime.accFilter[axis], val) : val;
+    jerkMagnitude = 0.0f;
+
+    // Apply anti-alias filter for attitude task - if enabled - and calculate jerk
+    for (unsigned axis = 0; axis < XYZ_AXIS_COUNT; axis++) {
+
+        if (axis == gyro.gyroDebugAxis) {
+            DEBUG_SET(DEBUG_ACCELEROMETER, 0, lrintf(acc.accADC[axis]));
+        }
+
+        if (accelerationRuntime.accLpfCutHz) {
+            acc.accADC[axis] = pt2FilterApply(&accelerationRuntime.accFilter[axis], acc.accADC[axis]);
+        }
+
+        acc.jerk[axis] = (acc.accADC[axis] - accAdcPrev[axis]) * acc.sampleRateHz;
+        accAdcPrev[axis] = acc.accADC[axis];
+
+        jerkMagnitude += sq(acc.jerk[axis]);
+
+        if (axis == gyro.gyroDebugAxis) {
+            DEBUG_SET(DEBUG_ACCELEROMETER, 1, lrintf(acc.accADC[axis]));
+            DEBUG_SET(DEBUG_ACCELEROMETER, 2, lrintf(acc.jerk[axis] / 100.0f));
+        }
     }
+
+    jerkMagnitude = sqrtf(jerkMagnitude);
+
+    DEBUG_SET(DEBUG_ACCELEROMETER, 3, lrintf(jerkMagnitude / 100.0f));
 }
 
-#endif
+bool accCollisionDetected(void)
+{
+    // if collision detection is disabled
+    if (accelerometerConfig()->collision_threshold == 0) {
+        return false;
+    }
+
+    return jerkMagnitude >= accelerometerConfig()->collision_threshold;
+}
+
+float accGetCollisionStrength(void)
+{
+    return jerkMagnitude;
+}
+
+#endif // USE_ACC
