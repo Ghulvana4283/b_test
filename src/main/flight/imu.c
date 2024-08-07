@@ -741,6 +741,9 @@ void imuUpdateAttitude(timeUs_t currentTimeUs)
         acc.accADC[X] = 0;
         acc.accADC[Y] = 0;
         acc.accADC[Z] = 0;
+        acc.jerk[X] = 0;
+        acc.jerk[Y] = 0;
+        acc.jerk[Z] = 0;
         schedulerIgnoreTaskStateTime();
     }
 

@@ -23,6 +23,7 @@
 #include "platform.h"
 
 #include "sensors/acceleration.h"
+#include "sensors/sensors.h"
 
 
 typedef struct accelerationRuntime_s {

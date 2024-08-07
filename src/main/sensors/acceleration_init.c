@@ -83,7 +83,6 @@
 #include "sensors/boardalignment.h"
 #include "sensors/gyro.h"
 #include "sensors/gyro_init.h"
-#include "sensors/sensors.h"
 
 #include "acceleration_init.h"
 
@@ -144,12 +143,13 @@ void pgResetFn_accelerometerConfig(accelerometerConfig_t *instance)
         .acc_lpf_hz = 25, // ATTITUDE/IMU runs at 100Hz (acro) or 500Hz (level modes) so we need to set 50 Hz (or lower) to avoid aliasing
         .acc_hardware = ACC_DEFAULT,
         .acc_high_fsr = false,
+        .collision_threshold = 0,  // Collision detection is off by default
     );
     resetRollAndPitchTrims(&instance->accelerometerTrims);
     resetFlightDynamicsTrims(&instance->accZero);
 }
 
-PG_REGISTER_WITH_RESET_FN(accelerometerConfig_t, accelerometerConfig, PG_ACCELEROMETER_CONFIG, 2);
+PG_REGISTER_WITH_RESET_FN(accelerometerConfig_t, accelerometerConfig, PG_ACCELEROMETER_CONFIG, 3);
 
 extern uint16_t InflightcalibratingA;
 extern bool AccInflightCalibrationMeasurementDone;
@@ -378,7 +378,7 @@ void accInitFilters(void)
     // the filter initialization is not defined (sample rate = 0)
     accelerationRuntime.accLpfCutHz = (acc.sampleRateHz) ? accelerometerConfig()->acc_lpf_hz : 0;
     if (accelerationRuntime.accLpfCutHz) {
-        const float k = pt2FilterGain(accelerationRuntime.accLpfCutHz, 1.0f / acc.sampleRateHz);
+        const float k = pt2FilterGain(accelerationRuntime.accLpfCutHz, HZ_TO_INTERVAL(acc.sampleRateHz));
         for (int axis = 0; axis < XYZ_AXIS_COUNT; axis++) {
             pt2FilterInit(&accelerationRuntime.accFilter[axis], k);
         }
@@ -402,7 +402,6 @@ bool accInit(uint16_t accSampleRateHz)
 #ifdef USE_MULTI_GYRO
     if (gyroConfig()->gyro_to_use == GYRO_CONFIG_USE_GYRO_2) {
         alignment = gyroDeviceConfig(1)->alignment;
-
         customAlignment = &gyroDeviceConfig(1)->customAlignment;
     }
 #endif
@@ -418,6 +417,7 @@ bool accInit(uint16_t accSampleRateHz)
 
     acc.sampleRateHz = accSampleRateHz;
     accInitFilters();
+
     return true;
 }
 
