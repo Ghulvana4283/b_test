@@ -106,9 +106,11 @@ COMMON_SRC = \
             drivers/pin_pull_up_down.c \
             drivers/resource.c \
             drivers/serial.c \
+            drivers/serial_impl.c \
             drivers/serial_pinconfig.c \
             drivers/serial_uart.c \
             drivers/serial_uart_pinconfig.c \
+            drivers/serial_uart_hw.c \
             drivers/sound_beeper.c \
             drivers/stack_check.c \
             drivers/system.c \
@@ -125,6 +127,7 @@ COMMON_SRC = \
             io/beeper.c \
             io/piniobox.c \
             io/serial.c \
+            io/serial_resource.c \
             io/smartaudio_protocol.c \
             io/statusindicator.c \
             io/tramp_protocol.c \
