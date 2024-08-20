@@ -125,7 +125,7 @@ typedef enum {
 #endif
     TABLE_SPA_MODE,
 #ifdef USE_LED_STRIP
-    TABLE_LED_PROFILE,
+    TABLE_LED_STRIP_MODE,
     TABLE_LEDSTRIP_COLOR,
 #endif
     TABLE_GYRO_FILTER_DEBUG,
