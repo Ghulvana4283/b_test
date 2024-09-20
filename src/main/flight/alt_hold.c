@@ -31,6 +31,8 @@
 #include "sensors/acceleration.h"
 #include "rx/rx.h"
 
+#include "blackbox/actual_flight_mode_log.h"
+
 #include "alt_hold.h"
 
 typedef struct {
@@ -58,7 +60,7 @@ float altitudePidCalculate(void)
     // * introductory notes *
     // this is a simple PID controller with heuristic D boost and iTerm relax
     // the basic parameters provide good control when initiated in stable situations
-    
+
     // tuning:
     // -reduce P I and D by 1/3 or until it doesn't oscillate but has sloppy / slow control
     // increase P until there is definite oscillation, then back off until barely noticeable
@@ -95,7 +97,7 @@ float altitudePidCalculate(void)
     simplePid.integral += altErrorCm * taskIntervalSeconds * simplePid.ki * itermRelax;
     // arbitrary limit on iTerm, same as for gps_rescue, +/-20% of full throttle range
     // ** might not be needed with input limiting **
-    simplePid.integral = constrainf(simplePid.integral, -200.0f, 200.0f); 
+    simplePid.integral = constrainf(simplePid.integral, -200.0f, 200.0f);
     const float iOut = simplePid.integral;
 
     // D
@@ -128,7 +130,7 @@ float altitudePidCalculate(void)
     DEBUG_SET(DEBUG_ALTHOLD, 6, lrintf(dOut));
     DEBUG_SET(DEBUG_ALTHOLD, 7, lrintf(fOut));
 
-    return output; // motor units, eg 100 means 10% of available throttle 
+    return output; // motor units, eg 100 means 10% of available throttle
 }
 
 void simplePidInit(float kp, float ki, float kd, float kf)
@@ -213,7 +215,7 @@ void altHoldUpdateTargetAltitude(void)
 
     const float lowThreshold = 0.5f * (positionConfig()->hover_throttle + PWM_RANGE_MIN); // halfway between hover and MIN, e.g. 1150 if hover is 1300
     const float highThreshold = 0.5f * (positionConfig()->hover_throttle + PWM_RANGE_MAX); // halfway between hover and MAX, e.g. 1650 if hover is 1300
-    
+
     float throttleAdjustmentFactor = 0.0f;
     if (rcThrottle < lowThreshold) {
         throttleAdjustmentFactor = scaleRangef(rcThrottle, PWM_RANGE_MIN, lowThreshold, -1.0f, 0.0f);
@@ -256,6 +258,8 @@ void altHoldUpdate(void)
 
     DEBUG_SET(DEBUG_ALTHOLD, 0, lrintf(altHoldState.targetAltitudeCm));
     DEBUG_SET(DEBUG_ALTHOLD, 2, lrintf(throttleAdjustment));
+
+    SET_ACTUAL_FLIGHT_MODE_STATE(ACTUAL_ALT_HOLD_MODE);
 }
 
 void updateAltHoldState(timeUs_t currentTimeUs) {
