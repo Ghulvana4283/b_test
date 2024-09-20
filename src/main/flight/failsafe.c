@@ -427,10 +427,9 @@ FAST_CODE_NOINLINE void failsafeUpdateState(void)
                 break;
         }
 
-    DEBUG_SET(DEBUG_FAILSAFE, 0, failsafeState.boxFailsafeSwitchWasOn);
-    DEBUG_SET(DEBUG_FAILSAFE, 3, failsafeState.phase);
-    SET_ACTUAL_FLIGHT_MODE_STATE(ACTUAL_FAILSAFE_MODE);
-
+        DEBUG_SET(DEBUG_FAILSAFE, 0, failsafeState.boxFailsafeSwitchWasOn);
+        DEBUG_SET(DEBUG_FAILSAFE, 3, failsafeState.phase);
+        SET_ACTUAL_FLIGHT_MODE_STATE(ACTUAL_FAILSAFE_MODE);
     } while (reprocessState);
 
     if (beeperMode != BEEPER_SILENCE) {
