@@ -62,6 +62,8 @@
 #include "sensors/battery.h"
 #include "sensors/gyro.h"
 
+#include "blackbox/actual_flight_mode_log.h"
+
 #include "pid.h"
 
 typedef enum {
@@ -473,9 +475,11 @@ STATIC_UNIT_TESTED FAST_CODE_NOINLINE float pidLevel(int axis, const pidProfile_
 
     if (FLIGHT_MODE(ANGLE_MODE| GPS_RESCUE_MODE)) {
         currentPidSetpoint = angleRate;
+        SET_ACTUAL_FLIGHT_MODE_STATE(ACTUAL_ANGLE_MODE);
     } else {
         // can only be HORIZON mode - crossfade Angle rate and Acro rate
         currentPidSetpoint = currentPidSetpoint * (1.0f - horizonLevelStrength) + angleRate * horizonLevelStrength;
+        SET_ACTUAL_FLIGHT_MODE_STATE(ACTUAL_HORIZON_MODE);
     }
 
     //logging
@@ -638,6 +642,8 @@ static FAST_CODE_NOINLINE float applyAcroTrainer(int axis, const rollAndPitchTri
             DEBUG_SET(DEBUG_ACRO_TRAINER, 2, lrintf(ret));
             DEBUG_SET(DEBUG_ACRO_TRAINER, 3, lrintf(projectedAngle * 10.0f));
         }
+
+        SET_ACTUAL_FLIGHT_MODE_STATE(ACTUAL_ACROTRAINER_MODE);
     }
 
     return ret;
@@ -875,6 +881,8 @@ static FAST_CODE_NOINLINE float applyLaunchControl(int axis, const rollAndPitchT
     UNUSED(angleTrim);
 #endif
 
+    SET_ACTUAL_FLIGHT_MODE_STATE(ACTUAL_AUTOLAUNCH_MODE);
+
     return ret;
 }
 #endif
@@ -903,7 +911,7 @@ NOINLINE static void calculateSpaValues(const pidProfile_t *pidProfile)
         pidRuntime.spa[axis] = 1.0f - smoothStepUpTransition(
             fabsf(currentRate), pidProfile->spa_center[axis], pidProfile->spa_width[axis]);
         DEBUG_SET(DEBUG_SPA, axis, lrintf(pidRuntime.spa[axis] * 1000));
-    }    
+    }
 #else
     UNUSED(pidProfile);
 #endif // USE_WING
@@ -971,7 +979,7 @@ void FAST_CODE pidController(const pidProfile_t *pidProfile, timeUs_t currentTim
 
     const bool isExternalAngleModeRequest = FLIGHT_MODE(GPS_RESCUE_MODE)
 #ifdef USE_ALT_HOLD_MODE
-                || FLIGHT_MODE(ALT_HOLD_MODE) 
+                || FLIGHT_MODE(ALT_HOLD_MODE)
 #endif
                 ;
     levelMode_e levelMode;
