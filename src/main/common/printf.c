@@ -69,12 +69,70 @@ static int putchw(void *putp, putcf putf, int n, char z, char *bf)
     return written;
 }
 
-// retrun number of bytes written
+// function to convert float to string
+static void tfp_ftoa(double f, char *buf, int buf_size, int precision) {
+    int i = 0;
+
+    // Handle negative numbers
+    if (f < 0) {
+        buf[i++] = '-';
+        f = -f;  // Make f positive
+    }
+
+    // Extract integer part
+    int ipart = (int)f;
+    double fpart = f - (double)ipart;
+
+    // Convert integer part
+    if (ipart == 0) {
+        buf[i++] = '0';
+    } else {
+        char temp[10];
+        int j = 0;
+        while (ipart) {
+            temp[j++] = (ipart % 10) + '0'; // part + '0' ASCII 48
+            ipart /= 10;
+        }
+        while (j > 0) {
+            if (i < buf_size) {
+                buf[i++] = temp[--j];
+            } else {
+                break;  // buffer overflow
+            }
+        }
+    }
+
+    buf[i++] = '.';
+
+    // Convert fractional part
+    for (int j = 0; j < precision; j++) {
+        fpart *= 10;
+        int digit = (int)fpart;
+        if (i < buf_size) {
+            buf[i++] = digit + '0'; // part + '0' ASCII 48
+        }
+        fpart -= digit;
+    }
+
+    // Round last digit in case of precision overflow
+    if ((int)(fpart * 10) >= 5 && i > 0 && i < buf_size) {
+        buf[i - 1] += 1;  // Round up the last digit
+    }
+
+    if (i < buf_size) {
+        buf[i] = '\0';
+    } else {
+        buf[buf_size - 1] = '\0';
+    }
+}
+
+// return number of bytes written
 int tfp_format(void *putp, putcf putf, const char *fmt, va_list va)
 {
-    char bf[12];
+    char bf[32];
     int written = 0;
     char ch;
+    const int buffer_size = sizeof(bf) - 1; // Reserve one byte for '\0'
 
     while ((ch = *(fmt++))) {
         if (ch != '%') {
@@ -85,6 +143,7 @@ int tfp_format(void *putp, putcf putf, const char *fmt, va_list va)
             char lng = 0;
 #endif
             int w = 0;
+            int precision = 6; // Default float precision
             ch = *(fmt++);
             if (ch == '0') {
                 ch = *(fmt++);
@@ -92,6 +151,12 @@ int tfp_format(void *putp, putcf putf, const char *fmt, va_list va)
             }
             if (ch >= '0' && ch <= '9') {
                 ch = a2i(ch, &fmt, 10, &w);
+            }
+            if (ch == '.') {
+                ch = *(fmt++);
+                if (ch >= '0' && ch <= '9') {
+                    ch = a2i(ch, &fmt, 10, &precision);
+                }
             }
 #ifdef  REQUIRE_PRINTF_LONG_SUPPORT
             if (ch == 'l') {
@@ -144,6 +209,12 @@ int tfp_format(void *putp, putcf putf, const char *fmt, va_list va)
             case 'n':
                 *va_arg(va, int*) = written;
                 break;
+            case 'f': {
+                double f = va_arg(va, double);
+                tfp_ftoa(f, bf, buffer_size, precision);
+                written = putchw(putp, putf, w, lz, bf);
+                break;
+            }
             default:
                 break;
             }
