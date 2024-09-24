@@ -55,6 +55,8 @@
 
 #include "rx/rx.h"
 
+#include "blackbox/actual_flight_mode_log.h"
+
 
 PG_REGISTER_WITH_RESET_FN(servoConfig_t, servoConfig, PG_SERVO_CONFIG, 0);
 
@@ -418,6 +420,7 @@ void servoMixer(void)
         input[INPUT_STABILIZED_ROLL] = rcCommand[ROLL];
         input[INPUT_STABILIZED_PITCH] = rcCommand[PITCH];
         input[INPUT_STABILIZED_YAW] = rcCommand[YAW];
+        SET_ACTUAL_FLIGHT_MODE_STATE(ACTUAL_PASSTHRU_MODE);
     } else {
         // Assisted modes (gyro only or gyro+acc according to AUX configuration in Gui
         input[INPUT_STABILIZED_ROLL] = pidData[FD_ROLL].Sum * PID_SERVO_MIXER_SCALING;

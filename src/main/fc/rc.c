@@ -56,6 +56,8 @@
 
 #include "rc.h"
 
+#include "blackbox/actual_flight_mode_log.h"
+
 
 typedef float (applyRatesFn)(const int axis, float rcCommandf, const float rcCommandfAbs);
 // note that rcCommand[] is an external float
@@ -797,6 +799,7 @@ FAST_CODE_NOINLINE void updateRcCommands(void)
         if (!FLIGHT_MODE(ANGLE_MODE | ALT_HOLD_MODE | HORIZON_MODE | GPS_RESCUE_MODE)) {
             rcCommand[YAW] = rcCommandBuff.z;
         }
+        SET_ACTUAL_FLIGHT_MODE_STATE(ACTUAL_HEADFREE_MODE);
     }
 }
 

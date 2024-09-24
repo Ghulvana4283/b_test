@@ -63,6 +63,8 @@
 #include "sensors/battery.h"
 #include "sensors/gyro.h"
 
+#include "blackbox/actual_flight_mode_log.h"
+
 #include "mixer.h"
 
 #define DYN_LPF_THROTTLE_STEPS           100
@@ -709,6 +711,9 @@ FAST_CODE_NOINLINE void mixTable(timeUs_t currentTimeUs)
     //  The following fixed throttle values will not be shown in the blackbox log
     // ?? Should they be influenced by airmode?  If not, should go after the apply airmode code.
     const bool airmodeEnabled = airmodeIsEnabled() || launchControlActive;
+    if(airmodeEnabled) {
+      SET_ACTUAL_FLIGHT_MODE_STATE(ACTUAL_AIR_MODE);
+    }
 #ifdef USE_YAW_SPIN_RECOVERY
     // 50% throttle provides the maximum authority for yaw recovery when airmode is not active.
     // When airmode is active the throttle setting doesn't impact recovery authority.

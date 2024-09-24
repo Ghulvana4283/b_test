@@ -28,6 +28,7 @@
 
 #include "blackbox/blackbox.h"
 #include "blackbox/blackbox_fielddefs.h"
+#include "blackbox/actual_flight_mode_log.h"
 
 #include "build/debug.h"
 
@@ -674,6 +675,8 @@ static void updateMagHold(void)
         if (isUpright()) {
             rcCommand[YAW] -= dif * currentPidProfile->pid[PID_MAG].P / 30;    // 18 deg
         }
+
+        SET_ACTUAL_FLIGHT_MODE_STATE(ACTUAL_MAG_MODE);
     } else
         magHold = DECIDEGREES_TO_DEGREES(attitude.values.yaw);
 }
@@ -971,7 +974,7 @@ void processRxModes(timeUs_t currentTimeUs)
 
     bool canUseHorizonMode = true;
     if ((IS_RC_MODE_ACTIVE(BOXANGLE)
-        || failsafeIsActive() 
+        || failsafeIsActive()
 #ifdef USE_ALT_HOLD_MODE
         || FLIGHT_MODE(ALT_HOLD_MODE)
 #endif
@@ -988,7 +991,7 @@ void processRxModes(timeUs_t currentTimeUs)
 
 #ifdef USE_ALT_HOLD_MODE
     // only if armed
-    if (ARMING_FLAG(ARMED) 
+    if (ARMING_FLAG(ARMED)
         // and either the alt_hold switch is activated, or are in failsafe
         && (IS_RC_MODE_ACTIVE(BOXALTHOLD) || failsafeIsActive())
         // but not in GPS_RESCUE_MODE, ie if failsafe is active, must be in Landing Mode

@@ -47,6 +47,8 @@
 
 #include "flight/pid.h"
 
+#include "blackbox/actual_flight_mode_log.h"
+
 /*
  * Usage:
  *
@@ -230,9 +232,13 @@ FAST_CODE_NOINLINE void failsafeUpdateState(void)
     if (!failsafeIsMonitoring()) {
         return;
     }
-
+    
+    if (FLIGHT_MODE(FAILSAFE_MODE)) {
+        SET_ACTUAL_FLIGHT_MODE_STATE(ACTUAL_FAILSAFE_MODE);
+    }
+    
     bool receivingRxData = failsafeIsReceivingRxData();
-    // returns state of FAILSAFE_RXLINK_UP, which 
+    // returns state of FAILSAFE_RXLINK_UP, which
     // goes false after the stage 1 delay, whether from signal loss or BOXFAILSAFE switch activation
     // goes true immediately BOXFAILSAFE switch is reverted, or after recovery delay once signal recovers
     // essentially means 'should be in failsafe stage 2'
@@ -367,7 +373,7 @@ FAST_CODE_NOINLINE void failsafeUpdateState(void)
             case FAILSAFE_GPS_RESCUE:
                 if (receivingRxData) {
                     if (areSticksActive(failsafeConfig()->failsafe_stick_threshold) || failsafeState.boxFailsafeSwitchWasOn) {
-                        // exits the rescue immediately if failsafe was initiated by switch, otherwise 
+                        // exits the rescue immediately if failsafe was initiated by switch, otherwise
                         // requires stick input to exit the rescue after a true Rx loss failsafe
                         // NB this test requires stick inputs to be received during GPS Rescue see PR #7936 for rationale
                         failsafeState.phase = FAILSAFE_RX_LOSS_RECOVERED;
@@ -427,7 +433,6 @@ FAST_CODE_NOINLINE void failsafeUpdateState(void)
 
         DEBUG_SET(DEBUG_FAILSAFE, 0, failsafeState.boxFailsafeSwitchWasOn);
         DEBUG_SET(DEBUG_FAILSAFE, 3, failsafeState.phase);
-
     } while (reprocessState);
 
     if (beeperMode != BEEPER_SILENCE) {
