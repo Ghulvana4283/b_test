@@ -783,6 +783,10 @@ void gpsRescueUpdate(void)
         performSanityChecks(); // Initialises sanity check values when a Rescue starts
     }
 
+  if (FLIGHT_MODE(GPS_RESCUE_MODE)) {
+    SET_ACTUAL_FLIGHT_MODE_STATE(ACTUAL_GPS_RESCUE_MODE);
+  }
+
     // Will now be in RESCUE_INITIALIZE mode, if just entered Rescue while IDLE, otherwise stays IDLE
 
     sensorUpdate(); // always get latest GPS and Altitude data, update ascend and descend rates
@@ -939,8 +943,6 @@ void gpsRescueUpdate(void)
 
     performSanityChecks();
     rescueAttainPosition();
-
-    SET_ACTUAL_FLIGHT_MODE_STATE(ACTUAL_GPS_RESCUE_MODE);
 
     newGPSData = false;
 }
