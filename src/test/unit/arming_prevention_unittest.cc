@@ -1134,17 +1134,24 @@ extern "C" {
     bool isMotorProtocolEnabled(void) { return true; }
     void pinioBoxTaskControl(void) {}
     void schedulerSetNextStateTime(timeDelta_t) {}
-    float getAltitude(void) { return 3000.0f; }
+
+    void getAltitudePidCoeffs(altitudePids_t* data)
+    {
+        data->kp = 0.0f;
+        data->ki = 0.0f;
+        data->kd = 0.0f;
+        data->kf = 0.0f;
+    }
+
+    void getAltitudeData(altitudeData_t* data)
+    {
+        data->altitudeCm = 0.0f;
+        data->altitudeDerivativeCmS = 0.0f;
+    }
+
     float pt1FilterGain(float, float) { return 0.5f; }
     float pt2FilterGain(float, float)  { return 0.1f; }
     float pt3FilterGain(float, float)  { return 0.1f; }
-    void pt2FilterInit(pt2Filter_t *throttleDLpf, float) {
-        UNUSED(throttleDLpf);
-    }
-    float pt2FilterApply(pt2Filter_t *throttleDLpf, float) {
-        UNUSED(throttleDLpf);
-        return 0.0f;
-    }
     void pt1FilterInit(pt1Filter_t *velocityDLpf, float) {
         UNUSED(velocityDLpf);
     }

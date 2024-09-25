@@ -38,17 +38,12 @@ typedef struct {
     float ki;
     float kd;
     float kf;
-    float previousAltitude;
     float integral;
-} simplePid_t;
+} altHoldPid_t;
 
-simplePid_t simplePid;
+altHoldPid_t altHoldPid;
 
 altHoldState_t altHoldState;
-
-#define ALT_HOLD_PID_P_SCALE  0.01f
-#define ALT_HOLD_PID_I_SCALE  0.003f
-#define ALT_HOLD_PID_D_SCALE  0.01f
 
 static pt2Filter_t altHoldDeltaLpf;
 static const float taskIntervalSeconds = 1.0f / ALTHOLD_TASK_RATE_HZ; // i.e. 0.01 s
@@ -56,7 +51,7 @@ static const float taskIntervalSeconds = 1.0f / ALTHOLD_TASK_RATE_HZ; // i.e. 0.
 float altitudePidCalculate(void)
 {
     // * introductory notes *
-    // this is a simple PID controller with heuristic D boost and iTerm relax
+    // this is a classical PID controller with heuristic D boost and iTerm relax
     // the basic parameters provide good control when initiated in stable situations
     
     // tuning:
@@ -80,31 +75,30 @@ float altitudePidCalculate(void)
     //   even though it may cause throttle oscillations while dropping quickly - the average D is what we need
     // - Prevent excessive iTerm growth when error is impossibly large for iTerm to resolve
 
-    const float altErrorCm = altHoldState.targetAltitudeCm - altHoldState.measuredAltitudeCm;
+    const float altitudeErrorCm = altHoldState.targetAltitudeCm - altHoldState.measuredAltitudeCm;
 
     // P
-    const float pOut = simplePid.kp * altErrorCm;
+    const float pOut = altHoldPid.kp * altitudeErrorCm;
 
     // I
     // input limit iTerm so that it doesn't grow fast with large errors
     // very important at the start if there are massive initial errors to prevent iTerm windup
 
-    // no iTerm change for error greater than 2m, otherwise it winds up badly
+    // much less iTerm change for errors greater than 2m, otherwise it winds up badly
     const float itermNormalRange = 200.0f; // 2m
-    const float itermRelax = (fabsf(altErrorCm) < itermNormalRange) ? 1.0f : 0.0f;
-    simplePid.integral += altErrorCm * taskIntervalSeconds * simplePid.ki * itermRelax;
+    const float itermRelax = (fabsf(altitudeErrorCm) < itermNormalRange) ? 1.0f : 0.1f;
+    altHoldPid.integral += altitudeErrorCm * altHoldPid.ki * itermRelax * taskIntervalSeconds;
     // arbitrary limit on iTerm, same as for gps_rescue, +/-20% of full throttle range
     // ** might not be needed with input limiting **
-    simplePid.integral = constrainf(simplePid.integral, -200.0f, 200.0f); 
-    const float iOut = simplePid.integral;
+    altHoldPid.integral = constrainf(altHoldPid.integral, -200.0f, 200.0f); 
+    const float iOut = altHoldPid.integral;
 
     // D
     // boost D by 'increasing apparent velocity' when vertical velocity exceeds 5 m/s ( D of 75 on defaults)
-    // the velocity trigger is arbitrary at this point
     // usually we don't see fast ascend/descend rates if the altitude hold starts under stable conditions
     // this is important primarily to arrest pre-existing fast drops or climbs at the start;
 
-    float vel = altHoldState.smoothedVerticalVelocity;
+    float vel = altHoldState.altitudeDerivativeCmS; // cm/s altitude derivative is always available
     const float kinkPoint = 500.0f; // velocity at which D should start to increase
     const float kinkPointAdjustment = kinkPoint * 2.0f; // Precompute constant
     const float sign = (vel > 0) ? 1.0f : -1.0f;
@@ -112,7 +106,7 @@ float altitudePidCalculate(void)
         vel = vel * 3.0f - sign * kinkPointAdjustment;
     }
 
-    const float dOut = simplePid.kd * vel;
+    const float dOut = altHoldPid.kd * -vel;
 
     // F
     // if error is used, we get a 'free kick' in derivative from changes in the target value
@@ -120,7 +114,12 @@ float altitudePidCalculate(void)
     // calculating feedforward separately avoids the filter lag.
     // Use user's D gain for the feedforward gain factor, works OK with a scaling factor of 0.01
     // A commanded drop at 100cm/s will return feedforward of the user's D value. or 15 on defaults
-    const float fOut = simplePid.kf * altHoldState.targetAltitudeAdjustRate;
+    const float fOut = altHoldPid.kf * altHoldState.targetAltitudeAdjustRate;
+    
+    // to further improve performance...
+    // adding a high-pass filtered amount of FF would give a boost when altitude changes were requested
+    // this would offset motor lag and kick off some initial vertical acceleration.
+    // this would be exactly what an experienced pilot would do.
 
     const float output = pOut + iOut + dOut + fOut;
     DEBUG_SET(DEBUG_ALTHOLD, 4, lrintf(pOut));
@@ -131,37 +130,36 @@ float altitudePidCalculate(void)
     return output; // motor units, eg 100 means 10% of available throttle 
 }
 
-void simplePidInit(float kp, float ki, float kd, float kf)
+void altHoldPidInit(void)
 {
-    simplePid.kp = kp;
-    simplePid.ki = ki;
-    simplePid.kd = kd;
-    simplePid.kf = kf;
-    simplePid.previousAltitude = 0.0f;
-    simplePid.integral = 0.0f;
+    altitudePids_t data;
+    getAltitudePidCoeffs(&data);
+    altHoldPid.kp = data.kp;
+    altHoldPid.ki = data.ki;
+    altHoldPid.kd = data.kd;
+    altHoldPid.kf = data.kf;
+    altHoldPid.integral = 0.0f;
+}
+
+void getCurrentAltitudeValues(void)
+{
+    altitudeData_t data;
+    getAltitudeData(&data);
+    altHoldState.measuredAltitudeCm = data.altitudeCm;
+    altHoldState.altitudeDerivativeCmS = data.altitudeDerivativeCmS;
 }
 
 void altHoldReset(void)
 {
+    altHoldPidInit(); // initialise PID coefficients with values from position.c, force iTerm to zero
+    getCurrentAltitudeValues(); // need current altitude to set target altitude
     altHoldState.targetAltitudeCm = altHoldState.measuredAltitudeCm;
-    simplePid.integral = 0.0f;
+    altHoldPid.integral = 0.0f;
     altHoldState.targetAltitudeAdjustRate = 0.0f;
 }
 
 void altHoldInit(void)
 {
-    simplePidInit(
-        ALT_HOLD_PID_P_SCALE * altholdConfig()->alt_hold_pid_p,
-        ALT_HOLD_PID_I_SCALE * altholdConfig()->alt_hold_pid_i,
-        ALT_HOLD_PID_D_SCALE * altholdConfig()->alt_hold_pid_d,
-        0.01f * altholdConfig()->alt_hold_pid_d); // use D gain for feedforward with simple scaling
-        // the multipliers are base scale factors
-        // iTerm is relatively weak, intended to be slow moving to adjust baseline errors
-        // the Hover value is important otherwise takes time for iTerm to correct
-        // High P will wobble readily
-        // with these scalers, the same numbers as for GPS Rescue work OK for altHold
-        // the goal is to share these gain factors, if practical for all altitude controllers
-
     //setup altitude D filter
     const float cutoffHz = 0.01f * positionConfig()->altitude_d_lpf; // default 1Hz, time constant about 160ms
     const float gain = pt2FilterGain(cutoffHz, taskIntervalSeconds);
@@ -240,6 +238,9 @@ void altHoldUpdateTargetAltitude(void)
 
 void altHoldUpdate(void)
 {
+    // get current altitude and derivative
+    getCurrentAltitudeValues();
+
     // check if the user has changed the target altitude using sticks
     if (altholdConfig()->alt_hold_target_adjust_rate) {
         altHoldUpdateTargetAltitude();
@@ -255,24 +256,14 @@ void altHoldUpdate(void)
     altHoldState.throttleOut = constrainf(newThrottle, altholdConfig()->alt_hold_throttle_min, altholdConfig()->alt_hold_throttle_max);
 
     DEBUG_SET(DEBUG_ALTHOLD, 0, lrintf(altHoldState.targetAltitudeCm));
-    DEBUG_SET(DEBUG_ALTHOLD, 2, lrintf(throttleAdjustment));
+    DEBUG_SET(DEBUG_ALTHOLD, 2, lrintf(newThrottle)); // normal range 1000-2000, but is beforeconstraint 
+    DEBUG_SET(DEBUG_ALTHOLD, 3, lrintf(tiltMultiplier * 100));
 }
 
 void updateAltHoldState(timeUs_t currentTimeUs) {
-    UNUSED(currentTimeUs);
+    UNUSED(currentTimeUs); 
 
-    // things that always happen
-    // calculate smoothed altitude Delta always, for effective value on 1st pass
-    altHoldState.measuredAltitudeCm = getAltitude();
-    float derivative = (simplePid.previousAltitude - altHoldState.measuredAltitudeCm) / taskIntervalSeconds; // cm/s
-    simplePid.previousAltitude = altHoldState.measuredAltitudeCm;
-
-    // smooth the derivative here to always have a current value, without delay due to filter lag
-    // this way we immediately have useful D on initialising the hold
-    altHoldState.smoothedVerticalVelocity = pt2FilterApply(&altHoldDeltaLpf, derivative);
-
-    DEBUG_SET(DEBUG_ALTHOLD, 1, lrintf(altHoldState.measuredAltitudeCm));
-
+    // check for enabling Alt Hold, otherwise do as little as possible while inactive
     altHoldProcessTransitions();
 
     if (altHoldState.isAltHoldActive) {
@@ -281,6 +272,7 @@ void updateAltHoldState(timeUs_t currentTimeUs) {
 }
 
 float altHoldGetThrottle(void) {
+    // see notes in gpsRescueGetThrottle() about mincheck
     return scaleRangef(altHoldState.throttleOut, MAX(rxConfig()->mincheck, PWM_RANGE_MIN), PWM_RANGE_MAX, 0.0f, 1.0f);
 }
 

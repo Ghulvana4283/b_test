@@ -79,6 +79,7 @@ typedef struct {
     float maxAltitudeCm;
     float returnAltitudeCm;
     float targetAltitudeCm;
+    float targetAltitudeStepCm;
     float targetVelocityCmS;
     float pitchAngleLimitDeg;
     float rollAngleLimitDeg;
@@ -96,6 +97,7 @@ typedef struct {
 
 typedef struct {
     float currentAltitudeCm;
+    float altitudeDerivativeCmS;
     float distanceToHomeCm;
     float distanceToHomeM;
     uint16_t groundSpeedCmS;
@@ -103,8 +105,6 @@ typedef struct {
     bool healthy;
     float errorAngle;
     float gpsDataIntervalSeconds;
-    float altitudeDataIntervalSeconds;
-    float gpsRescueTaskIntervalSeconds;
     float velocityToHomeCmS;
     float alitutudeStepCm;
     float maxPitchStep;
@@ -120,16 +120,25 @@ typedef struct {
     bool isAvailable;
 } rescueState_s;
 
+typedef struct {
+    float kp;
+    float ki;
+    float kd;
+    float kf;
+} throttlePidCoeffs_s;
+
+throttlePidCoeffs_s throttlePidCoeffs;
+
 #define GPS_RESCUE_MAX_YAW_RATE          180    // deg/sec max yaw rate
 #define GPS_RESCUE_MAX_THROTTLE_ITERM    200    // max iterm value for throttle in degrees * 100
 #define GPS_RESCUE_ALLOWED_YAW_RANGE   30.0f   // yaw error must be less than this to enter fly home phase, and to pitch during descend()
 
+static const float taskIntervalSeconds = 1.0f / TASK_GPS_RESCUE_RATE_HZ; // i.e. 0.01 s
 static float rescueThrottle;
 static float rescueYaw;
-float       gpsRescueAngle[ANGLE_INDEX_COUNT] = { 0, 0 };
-bool        magForceDisable = false;
+float gpsRescueAngle[ANGLE_INDEX_COUNT] = { 0, 0 };
+bool magForceDisable = false;
 static bool newGPSData = false;
-static pt2Filter_t throttleDLpf;
 static pt1Filter_t velocityDLpf;
 static pt3Filter_t velocityUpsampleLpf;
 
@@ -137,13 +146,7 @@ rescueState_s rescueState;
 
 void gpsRescueInit(void)
 {
-    rescueState.sensor.gpsRescueTaskIntervalSeconds = HZ_TO_INTERVAL(TASK_GPS_RESCUE_RATE_HZ);
-
     float cutoffHz, gain;
-    cutoffHz = positionConfig()->altitude_d_lpf / 100.0f;
-    gain = pt2FilterGain(cutoffHz, rescueState.sensor.gpsRescueTaskIntervalSeconds);
-    pt2FilterInit(&throttleDLpf, gain);
-
     cutoffHz = gpsRescueConfig()->pitchCutoffHz / 100.0f;
     rescueState.intent.velocityPidCutoff = cutoffHz;
     rescueState.intent.velocityPidCutoffModifier = 1.0f;
@@ -151,7 +154,7 @@ void gpsRescueInit(void)
     pt1FilterInit(&velocityDLpf, gain);
 
     cutoffHz *= 4.0f; 
-    gain = pt3FilterGain(cutoffHz, rescueState.sensor.gpsRescueTaskIntervalSeconds);
+    gain = pt3FilterGain(cutoffHz, taskIntervalSeconds);
     pt3FilterInit(&velocityUpsampleLpf, gain);
 }
 
@@ -216,8 +219,6 @@ static void rescueAttainPosition(void)
     static float previousVelocityError = 0.0f;
     static float velocityI = 0.0f;
     static float throttleI = 0.0f;
-    static float previousAltitudeError = 0.0f;
-    static int16_t throttleAdjustment = 0;
 
     switch (rescueState.phase) {
     case RESCUE_IDLE:
@@ -231,8 +232,6 @@ static void rescueAttainPosition(void)
         previousVelocityError = 0.0f;
         velocityI = 0.0f;
         throttleI = 0.0f;
-        previousAltitudeError = 0.0f;
-        throttleAdjustment = 0;
         rescueState.intent.disarmThreshold = gpsRescueConfig()->disarmThreshold * 0.1f;
         rescueState.sensor.imuYawCogGain = 1.0f;
         return;
@@ -250,46 +249,47 @@ static void rescueAttainPosition(void)
         Altitude (throttle) controller
     */
     // currentAltitudeCm is updated at TASK_GPS_RESCUE_RATE_HZ
-    const float altitudeError = (rescueState.intent.targetAltitudeCm - rescueState.sensor.currentAltitudeCm) / 100.0f;
+    const float altitudeErrorCm = (rescueState.intent.targetAltitudeCm - rescueState.sensor.currentAltitudeCm);
     // height above target in metres (negative means too low)
     // at the start, the target starts at current altitude plus one step.  Increases stepwise to intended value.
 
     // P component
-    const float throttleP = gpsRescueConfig()->throttleP * altitudeError;
+    const float throttleP = throttlePidCoeffs.kp * altitudeErrorCm;
 
     // I component
-    throttleI += 0.1f * gpsRescueConfig()->throttleI * altitudeError * rescueState.sensor.altitudeDataIntervalSeconds;
+    // reduce the iTerm gain for errors greater than 2m, otherwise it winds up too much
+    const float itermNormalRange = 200.0f; // 2m
+    const float itermRelax = (fabsf(altitudeErrorCm) < itermNormalRange) ? 1.0f : 0.1f;
+
+    throttleI += altitudeErrorCm * throttlePidCoeffs.ki * itermRelax * taskIntervalSeconds;
     throttleI = constrainf(throttleI, -1.0f * GPS_RESCUE_MAX_THROTTLE_ITERM, 1.0f * GPS_RESCUE_MAX_THROTTLE_ITERM);
-    // up to 20% increase in throttle from I alone
+    // up to 20% increase in throttle from I alone, need to check if this is needed, in practice.
 
-    // D component is error based, so includes positive boost when climbing and negative boost on descent
-    float throttleD = ((altitudeError - previousAltitudeError) / rescueState.sensor.altitudeDataIntervalSeconds);
-    previousAltitudeError = altitudeError;
-    // increase by up to 2x when descent rate is faster
-    throttleD *= rescueState.intent.throttleDMultiplier;
-    // apply user's throttle D gain
-    throttleD *= gpsRescueConfig()->throttleD;
-    DEBUG_SET(DEBUG_GPS_RESCUE_THROTTLE_PID, 6, lrintf(throttleD)); // throttle D before lowpass smoothing
-    // smooth
-    throttleD = pt2FilterApply(&throttleDLpf, throttleD);
+    // D component
+    const float throttleD = -rescueState.sensor.altitudeDerivativeCmS * throttlePidCoeffs.kp * rescueState.intent.throttleDMultiplier;
 
-    // acceleration component not currently implemented - was needed previously due to GPS lag, maybe not needed now.
+    // F component
+    // add a feedforward element that is proportional to the ascend or descend rate
+    const float throttleF = throttlePidCoeffs.kf * rescueState.intent.targetAltitudeStepCm * TASK_GPS_RESCUE_RATE_HZ;
 
-    float tiltAdjustment = 1.0f - getCosTiltAngle(); // 0 = flat, gets to 0.2 correcting on a windy day
-    tiltAdjustment *= (positionConfig()->hover_throttle - 1000);
-    // if hover is 1300, and adjustment .2, this gives us 0.2*300 or 60 of extra throttle, not much, but useful
-    // too much and landings with lots of pitch adjustment, eg windy days, can be a problem
+    const float hoverOffset = positionConfig()->hover_throttle - PWM_RANGE_MIN;
 
-    throttleAdjustment = throttleP + throttleI + throttleD + tiltAdjustment;
+    const float tiltMultiplier = 2.0f - fmaxf(getCosTiltAngle(), 0.5f); // same code as alt_hold
+    // 1 = flat, 1.24 at 40 degrees, max 1.5 around 60 degrees, the default limit of Angle Mode
+    // 2 - cos(x) is between 1/cos(x) and 1/sqrt(cos(x)) in this range
 
-    rescueThrottle = positionConfig()->hover_throttle + throttleAdjustment;
+    rescueThrottle = PWM_RANGE_MIN + (throttleP + throttleI + throttleD + throttleF + hoverOffset) * tiltMultiplier;
+
+    DEBUG_SET(DEBUG_GPS_RESCUE_THROTTLE_PID, 2, lrintf(rescueThrottle)); // normal range 1000-2000 but is before constraint
+
+    // constrain rescue throttle
     rescueThrottle = constrainf(rescueThrottle, gpsRescueConfig()->throttleMin, gpsRescueConfig()->throttleMax);
 
-    DEBUG_SET(DEBUG_GPS_RESCUE_THROTTLE_PID, 0, lrintf(throttleP));
-    DEBUG_SET(DEBUG_GPS_RESCUE_THROTTLE_PID, 1, lrintf(throttleD));
-    DEBUG_SET(DEBUG_GPS_RESCUE_THROTTLE_PID, 4, lrintf(throttleI));
-    DEBUG_SET(DEBUG_GPS_RESCUE_THROTTLE_PID, 5, lrintf(tiltAdjustment));     // factor that adjusts throttle based on tilt angle
-    DEBUG_SET(DEBUG_GPS_RESCUE_THROTTLE_PID, 7, lrintf(throttleAdjustment)); // pidSum; amount to add/subtract from hover throttle value
+    DEBUG_SET(DEBUG_GPS_RESCUE_THROTTLE_PID, 3, lrintf(tiltMultiplier * 100));
+    DEBUG_SET(DEBUG_GPS_RESCUE_THROTTLE_PID, 4, lrintf(throttleP));
+    DEBUG_SET(DEBUG_GPS_RESCUE_THROTTLE_PID, 5, lrintf(throttleI));
+    DEBUG_SET(DEBUG_GPS_RESCUE_THROTTLE_PID, 6, lrintf(throttleD));
+    DEBUG_SET(DEBUG_GPS_RESCUE_THROTTLE_PID, 7, lrintf(throttleF));
     DEBUG_SET(DEBUG_GPS_RESCUE_TRACKING, 6, lrintf(rescueThrottle));         // throttle value to use during a rescue
 
     /**
@@ -545,17 +545,13 @@ static void performSanityChecks(void)
 static void sensorUpdate(void)
 {
     static float prevDistanceToHomeCm = 0.0f;
-    const timeUs_t currentTimeUs = micros();
 
-    static timeUs_t previousAltitudeDataTimeUs = 0;
-    const timeDelta_t altitudeDataIntervalUs = cmpTimeUs(currentTimeUs, previousAltitudeDataTimeUs);
-    rescueState.sensor.altitudeDataIntervalSeconds = altitudeDataIntervalUs * 0.000001f;
-    previousAltitudeDataTimeUs = currentTimeUs;
-
-    rescueState.sensor.currentAltitudeCm = getAltitude();
+    altitudeData_t data;
+    getAltitudeData(&data);
+    rescueState.sensor.currentAltitudeCm = data.altitudeCm;
+    rescueState.sensor.altitudeDerivativeCmS = data.altitudeDerivativeCmS;
 
     DEBUG_SET(DEBUG_GPS_RESCUE_TRACKING, 2, lrintf(rescueState.sensor.currentAltitudeCm));
-    DEBUG_SET(DEBUG_GPS_RESCUE_THROTTLE_PID, 2, lrintf(rescueState.sensor.currentAltitudeCm));
     DEBUG_SET(DEBUG_GPS_RESCUE_HEADING, 0, rescueState.sensor.groundSpeedCmS);  // groundspeed cm/s
     DEBUG_SET(DEBUG_GPS_RESCUE_HEADING, 1, gpsSol.groundCourse);                // degrees * 10
     DEBUG_SET(DEBUG_GPS_RESCUE_HEADING, 2, attitude.values.yaw);                // degrees * 10
@@ -738,23 +734,24 @@ void descend(void)
     rescueState.intent.yawAttenuator = 1.0f;
 
     // set the altitude step, considering the interval between altitude readings and the descent rate
-    float altitudeStep = rescueState.sensor.altitudeDataIntervalSeconds * gpsRescueConfig()->descendRate;
+    float altitudeStepCm = taskIntervalSeconds * gpsRescueConfig()->descendRate;
 
     // descend more slowly if the return home altitude was less than 20m
     const float descentRateAttenuator = constrainf (rescueState.intent.returnAltitudeCm / 2000.0f, 0.25f, 1.0f);
-    altitudeStep *= descentRateAttenuator;
+    altitudeStepCm *= descentRateAttenuator;
     // slowest descent rate will be 1/4 of normal when we start descending at or below 5m above take-off point.
     // otherwise a rescue initiated very low and close may not get all the way home
 
     // descend faster while the quad is at higher altitudes
     const float descentRateMultiplier = constrainf(rescueState.intent.targetAltitudeCm / 5000.0f, 0.0f, 1.0f);
-    altitudeStep *= 1.0f + (2.0f * descentRateMultiplier); 
+    altitudeStepCm *= 1.0f + (2.0f * descentRateMultiplier); 
     // maximum descent rate increase is 3x default above 50m, 2x above 25m, 1.2x at 5m, default by ground level
 
     // also increase throttle D up to 2x in the descent phase when altitude descent rate is faster, for better control
     rescueState.intent.throttleDMultiplier = 1.0f + descentRateMultiplier;
 
-    rescueState.intent.targetAltitudeCm -= altitudeStep;
+    rescueState.intent.targetAltitudeStepCm = -altitudeStepCm;
+    rescueState.intent.targetAltitudeCm += rescueState.intent.targetAltitudeStepCm;
 }
 
 void initialiseRescueValues (void)
@@ -768,6 +765,15 @@ void initialiseRescueValues (void)
     rescueState.intent.pitchAngleLimitDeg = 0.0f; // force pitch adjustment to zero - level mode will level out
     rescueState.intent.velocityItermAttenuator = 1.0f; // allow iTerm to accumulate normally unless constrained by IMU error or descent phase
     rescueState.intent.velocityItermRelax = 0.0f; // but don't accumulate any at the start, not until fly home
+    rescueState.intent.targetAltitudeStepCm = 0.0f;
+
+    // get throttle pid coefficients from position.c
+    altitudePids_t data;
+    getAltitudePidCoeffs(&data);
+    throttlePidCoeffs.kp = data.kp;
+    throttlePidCoeffs.ki = data.ki;
+    throttlePidCoeffs.kd = data.kd;
+    throttlePidCoeffs.kf = data.kf;
 }
 
 void gpsRescueUpdate(void)
@@ -831,11 +837,13 @@ void gpsRescueUpdate(void)
         // sanity check will abort if altitude gain is blocked for a cumulative period
         if (returnAltitudeLow == (rescueState.sensor.currentAltitudeCm < rescueState.intent.returnAltitudeCm)) {
             // we started low, and still are low; also true if we started high, and still are too high
-            const float altitudeStep = (returnAltitudeLow ? gpsRescueConfig()->ascendRate : -1.0f * gpsRescueConfig()->descendRate) * rescueState.sensor.gpsRescueTaskIntervalSeconds;
-            rescueState.intent.targetAltitudeCm += altitudeStep;
+            rescueState.intent.targetAltitudeStepCm = (returnAltitudeLow ? gpsRescueConfig()->ascendRate : -1.0f * gpsRescueConfig()->descendRate) * taskIntervalSeconds;
+            rescueState.intent.targetAltitudeCm += rescueState.intent.targetAltitudeStepCm;
+
         } else {
             // target altitude achieved - move on to ROTATE phase, returning at target altitude
             rescueState.intent.targetAltitudeCm = rescueState.intent.returnAltitudeCm;
+            rescueState.intent.targetAltitudeStepCm = 0.0f;
             // if initiated too close, do not rotate or do anything else until sufficiently far away that a 'normal' rescue can happen
             if (rescueState.sensor.distanceToHomeM > gpsRescueConfig()->minStartDistM) {
                 rescueState.phase = RESCUE_ROTATE;
@@ -848,7 +856,7 @@ void gpsRescueUpdate(void)
 
     case RESCUE_ROTATE:
         if (rescueState.intent.yawAttenuator < 1.0f) { // acquire yaw authority over one second
-            rescueState.intent.yawAttenuator += rescueState.sensor.gpsRescueTaskIntervalSeconds;
+            rescueState.intent.yawAttenuator += taskIntervalSeconds;
         }
         if (rescueState.sensor.absErrorAngle < GPS_RESCUE_ALLOWED_YAW_RANGE) {
             // enter fly home phase, and enable pitch, when the yaw angle error is small enough
@@ -862,12 +870,12 @@ void gpsRescueUpdate(void)
 
     case RESCUE_FLY_HOME:
         if (rescueState.intent.yawAttenuator < 1.0f) { // be sure to accumulate full yaw authority
-            rescueState.intent.yawAttenuator += rescueState.sensor.gpsRescueTaskIntervalSeconds;
+            rescueState.intent.yawAttenuator += taskIntervalSeconds;
         }
         // velocity PIDs are now active
         // update target velocity gradually, aiming for rescueGroundspeed with a time constant of 1.0s
         const float targetVelocityError = gpsRescueConfig()->groundSpeedCmS - rescueState.intent.targetVelocityCmS;
-        const float velocityTargetStep = rescueState.sensor.gpsRescueTaskIntervalSeconds * targetVelocityError;
+        const float velocityTargetStep = taskIntervalSeconds * targetVelocityError;
         // velocityTargetStep is positive when starting low, negative when starting high
         const bool targetVelocityIsLow = rescueState.intent.targetVelocityCmS < gpsRescueConfig()->groundSpeedCmS;
         if (initialVelocityLow == targetVelocityIsLow) {
@@ -876,7 +884,7 @@ void gpsRescueUpdate(void)
         }
 
         // slowly introduce velocity iTerm accumulation at start, goes 0 ->1 with time constant 2.0s
-        rescueState.intent.velocityItermRelax += 0.5f * rescueState.sensor.gpsRescueTaskIntervalSeconds * (1.0f - rescueState.intent.velocityItermRelax);
+        rescueState.intent.velocityItermRelax += 0.5f * taskIntervalSeconds * (1.0f - rescueState.intent.velocityItermRelax);
         // there is always a lot of lag at the start, this gradual start avoids excess iTerm accumulation
 
         rescueState.intent.velocityPidCutoffModifier = 2.0f - rescueState.intent.velocityItermRelax; 
@@ -932,7 +940,7 @@ void gpsRescueUpdate(void)
     }
 
     DEBUG_SET(DEBUG_GPS_RESCUE_TRACKING, 3, lrintf(rescueState.intent.targetAltitudeCm));
-    DEBUG_SET(DEBUG_GPS_RESCUE_THROTTLE_PID, 3, lrintf(rescueState.intent.targetAltitudeCm));
+    DEBUG_SET(DEBUG_GPS_RESCUE_THROTTLE_PID, 0, lrintf(rescueState.intent.targetAltitudeCm));
     DEBUG_SET(DEBUG_RTH, 0, lrintf(rescueState.intent.maxAltitudeCm / 10.0f));
 
     performSanityChecks();
@@ -953,12 +961,13 @@ float gpsRescueGetImuYawCogGain(void)
 
 float gpsRescueGetThrottle(void)
 {
-    // Calculated a desired commanded throttle scaled from 0.0 to 1.0 for use in the mixer.
-    // We need to compensate for min_check since the throttle value set by gps rescue
-    // is based on the raw rcCommand value commanded by the pilot.
+    // Calculate the commanded throttle scaled from 0.0 to 1.0 for use in the mixer.
+    // minCheck can be less than, or greater than, PWM_RANGE_MIN, but is usually at default of 1050
+    // it is the value at which the user expects the motors to start spinning (leaving a deadband from 1000 to 1050)
+    // rescue throttle min can't be less than gps_rescue_throttle_min (1100) or greater than max (1750)
+    // we scale throttle from mincheck to PWM_RANGE_MAX when mincheck is greater than PWM_RANGE_MIN, otherwise from PWM_RANGE_MIN to PWM_RANGE_MAX
     float commandedThrottle = scaleRangef(rescueThrottle, MAX(rxConfig()->mincheck, PWM_RANGE_MIN), PWM_RANGE_MAX, 0.0f, 1.0f);
-    commandedThrottle = constrainf(commandedThrottle, 0.0f, 1.0f);
-
+    // if mincheck is set below PWRM_RANGE_MIN, the gps rescue throttle may seem greater than expected
     return commandedThrottle;
 }
 
